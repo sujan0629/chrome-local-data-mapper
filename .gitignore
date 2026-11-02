@@ -1,0 +1,18 @@
+# Never commit local SQLite databases or Chrome history backups
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.bak
+backups/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Python cache
+__pycache__/
+*.py[cod]
+.venv/
+venv/
