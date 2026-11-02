@@ -38,10 +38,109 @@ TRANSITION_TYPES = {
     805306369: "Typed URL",
     805306370: "Bookmark",
     805306376: "Reload",
+    838860805: "Omnibox Search",
 }
 
 TYPED_URL_TRANSITION = 805306369
+OMNIBOX_SEARCH_TRANSITION = 838860805
 DEFAULT_TRANSITION = 805306368
+
+
+def resolve_url_or_search_query(
+    raw_input: str,
+    raw_title: str = "",
+    entry_type: str = "auto",
+    transition: int = DEFAULT_TRANSITION,
+) -> dict:
+    """
+    Convert a plain search query (e.g. 'how to make egg curry') or URL into
+    Chrome's exact URL, Page Title, Transition code, and `keyword_search_terms` metadata.
+    """
+    text = (raw_input or "").strip()
+    if not text:
+        raise ValueError("URL or search query cannot be empty.")
+
+    title = (raw_title or "").strip()
+    entry_type = (entry_type or "auto").strip().lower()
+    trans = int(transition or DEFAULT_TRANSITION)
+
+    # Determine if `text` is a plain search query vs a URL
+    looks_like_url = (
+        text.startswith(("http://", "https://", "chrome://", "file://", "about:"))
+        or (" " not in text and "." in text and not text.startswith("."))
+    )
+
+    if entry_type == "google_search" or (entry_type == "auto" and not looks_like_url):
+        q_encoded = urllib.parse.quote_plus(text)
+        final_url = f"https://www.google.com/search?q={q_encoded}&oq={q_encoded}&sourceid=chrome&ie=UTF-8"
+        final_title = title if title else f"{text} - Google Search"
+        final_trans = OMNIBOX_SEARCH_TRANSITION if trans == DEFAULT_TRANSITION else trans
+        return {
+            "url": final_url,
+            "title": final_title,
+            "transition": final_trans,
+            "search_term": text,
+            "normalized_term": " ".join(text.lower().split()),
+            "keyword_id": 2,  # Chrome default Google keyword_id
+            "is_search": True,
+        }
+
+    if entry_type == "youtube_search":
+        q_encoded = urllib.parse.quote_plus(text)
+        final_url = f"https://www.youtube.com/results?search_query={q_encoded}"
+        final_title = title if title else f"{text} - YouTube"
+        return {
+            "url": final_url,
+            "title": final_title,
+            "transition": trans,
+            "search_term": text,
+            "normalized_term": " ".join(text.lower().split()),
+            "keyword_id": 31,  # YouTube keyword_id
+            "is_search": True,
+        }
+
+    # Direct URL: normalize scheme if missing (e.g. 'wikipedia.org/wiki/Dodgeball')
+    final_url = text
+    if not final_url.startswith(("http://", "https://", "chrome://", "file://", "about:")):
+        final_url = "https://" + final_url
+
+    # Check if the direct URL itself is a Google or YouTube search URL
+    parsed = urllib.parse.urlparse(final_url)
+    qs = urllib.parse.parse_qs(parsed.query)
+    if "google." in (parsed.netloc or "").lower() and parsed.path.startswith("/search") and "q" in qs:
+        term = qs["q"][0].strip()
+        if term:
+            return {
+                "url": final_url,
+                "title": title if title else f"{term} - Google Search",
+                "transition": trans,
+                "search_term": term,
+                "normalized_term": " ".join(term.lower().split()),
+                "keyword_id": 2,
+                "is_search": True,
+            }
+    if "youtube.com" in (parsed.netloc or "").lower() and "search_query" in qs:
+        term = qs["search_query"][0].strip()
+        if term:
+            return {
+                "url": final_url,
+                "title": title if title else f"{term} - YouTube",
+                "transition": trans,
+                "search_term": term,
+                "normalized_term": " ".join(term.lower().split()),
+                "keyword_id": 31,
+                "is_search": True,
+            }
+
+    return {
+        "url": final_url,
+        "title": title,
+        "transition": trans,
+        "search_term": "",
+        "normalized_term": "",
+        "keyword_id": 0,
+        "is_search": False,
+    }
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -694,20 +793,22 @@ class HistoryDBManager:
         transition: int = DEFAULT_TRANSITION,
         duration_seconds: float = 0.0,
         from_visit: int = 0,
+        entry_type: str = "auto",
     ) -> dict:
         """
-        Internal helper to add a visit within an active transaction:
-        1. Check if `url` already exists in `urls`.
-        2. If it exists, update `title` (if provided) and increment `typed_count` if transition is Typed URL.
-        3. If it does not exist, insert a new row into `urls`.
-        4. Insert the new visit record into `visits` referencing `urls.id`.
-        5. Recalculate and sync `urls.visit_count = COUNT(*)` and `urls.last_visit_time = MAX(visit_time)`.
+        Internal helper to add a visit (or Google/YouTube search query) within an active transaction:
+        1. Resolve plain search queries (e.g. 'how to make egg curry') into Chrome search URLs + titles.
+        2. Check if `url` already exists in `urls`.
+        3. If it exists, update `title` (if provided) and increment `typed_count` if transition is Typed URL.
+        4. If it does not exist, insert a new row into `urls`.
+        5. Insert the new visit record into `visits` referencing `urls.id`.
+        6. If it is a search query, record the search term in `keyword_search_terms`.
+        7. Recalculate and sync `urls.visit_count = COUNT(*)` and `urls.last_visit_time = MAX(visit_time)`.
         """
-        url = url.strip()
-        if not url:
-            raise ValueError("URL cannot be empty.")
-        title = (title or "").strip()
-        transition = int(transition)
+        resolved = resolve_url_or_search_query(url, title, entry_type=entry_type, transition=transition)
+        url = resolved["url"]
+        title = resolved["title"]
+        transition = int(resolved["transition"])
         webkit_time = int(webkit_time)
         visit_duration_us = int(round(max(0.0, float(duration_seconds or 0.0)) * MICROSECONDS_PER_SECOND))
         typed_increment = 1 if is_typed_transition(transition) else 0
@@ -755,6 +856,32 @@ class HistoryDBManager:
             },
         )
 
+        # If this is a search query (Google / YouTube), populate Chrome's `keyword_search_terms` table
+        if resolved["is_search"] and resolved["search_term"]:
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS keyword_search_terms (
+                        keyword_id INTEGER NOT NULL,
+                        url_id INTEGER NOT NULL,
+                        term LONGVARCHAR NOT NULL,
+                        normalized_term LONGVARCHAR NOT NULL
+                    )
+                    """
+                )
+                existing_kw = conn.execute(
+                    "SELECT 1 FROM keyword_search_terms WHERE url_id = ? AND normalized_term = ?",
+                    (url_id, resolved["normalized_term"]),
+                ).fetchone()
+                if not existing_kw:
+                    self.execute_sql(
+                        conn,
+                        "INSERT INTO keyword_search_terms (keyword_id, url_id, term, normalized_term) VALUES (?, ?, ?, ?)",
+                        (resolved["keyword_id"], url_id, resolved["search_term"], resolved["normalized_term"]),
+                    )
+            except Exception:
+                pass
+
         # If real Chrome `context_annotations` table exists, insert a matching annotation row
         try:
             has_ctx = conn.execute(
@@ -778,6 +905,9 @@ class HistoryDBManager:
         return {
             "visit_id": visit_id,
             "url_id": url_id,
+            "resolved_url": url,
+            "resolved_title": title or url,
+            "search_term": resolved["search_term"],
             "webkit_timestamp": webkit_time,
             "url_record": updated_url,
         }
@@ -793,13 +923,15 @@ class HistoryDBManager:
         transition: int = DEFAULT_TRANSITION,
         duration_seconds: float = 0.0,
         use_utc: bool = False,
+        entry_type: str = "auto",
     ) -> dict:
-        """Add a link & visit with a custom date/time or explicit WebKit timestamp."""
+        """Add a link or search query with a custom date/time or explicit WebKit timestamp."""
         with self.lock:
             self.try_sync_to_target_chrome()
-            if not (title or "").strip():
+            resolved_preview = resolve_url_or_search_query(url, title, entry_type=entry_type, transition=transition)
+            if not resolved_preview["title"] and not resolved_preview["is_search"]:
                 try:
-                    title = fetch_title_from_url(url, timeout=2.5)
+                    title = fetch_title_from_url(resolved_preview["url"], timeout=2.5)
                 except Exception:
                     title = ""
             if webkit_timestamp is not None:
@@ -820,13 +952,14 @@ class HistoryDBManager:
                     webkit_time=webkit_time,
                     transition=transition,
                     duration_seconds=duration_seconds,
+                    entry_type=entry_type,
                 )
                 conn.commit()
                 if self.target_chrome_path and self.target_chrome_path != self.custom_path:
                     self.pending_chrome_ops.append({
                         "op": "add_visit",
-                        "url": url,
-                        "title": title,
+                        "url": result["resolved_url"],
+                        "title": result["resolved_title"],
                         "webkit_time": webkit_time,
                         "transition": transition,
                         "duration_seconds": duration_seconds,
@@ -2024,28 +2157,37 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
         </div>
       </section>
 
-      <!-- Card 2: Add Link with Custom Date & Time -->
+      <!-- Card 2: Add Link or Search Query with Custom Date & Time -->
       <section class="card">
         <div class="card-header">
           <div class="card-title">
-            <span>2. Add Link with Custom Date &amp; Time</span>
-            <span class="badge">Auto-syncs urls &amp; visits</span>
+            <span>2. Add Link or Search Query with Custom Date &amp; Time</span>
+            <span class="badge">Auto-syncs urls, visits &amp; keyword_search_terms</span>
           </div>
         </div>
 
         <form id="addVisitForm" onsubmit="submitAddVisit(event)">
           <div class="form-grid">
-            <div class="col-12">
-              <label for="addUrl">URL *</label>
+            <div class="col-4">
+              <label for="addEntryType">Entry Mode</label>
+              <select id="addEntryType">
+                <option value="auto">Auto-Detect (URL or Google Search)</option>
+                <option value="google_search">Google Search Query</option>
+                <option value="youtube_search">YouTube Search Query</option>
+                <option value="direct_url">Direct Website URL</option>
+              </select>
+            </div>
+            <div class="col-8">
+              <label for="addUrl">URL or Search Query (e.g. <code>how to make egg curry</code>) *</label>
               <div class="input-with-btn">
-                <input type="text" id="addUrl" required placeholder="https://example.com/article" />
-                <button type="button" class="btn-secondary" id="btnFetchTitle" onclick="autoFetchTitle()">Auto-Fetch Title from URL</button>
+                <input type="text" id="addUrl" required placeholder="https://example.com/article OR how to make egg curry" />
+                <button type="button" class="btn-secondary" id="btnFetchTitle" onclick="autoFetchTitle()">Auto-Fetch Title</button>
               </div>
             </div>
 
             <div class="col-12">
               <label for="addTitle">Page Title</label>
-              <input type="text" id="addTitle" placeholder="Page Title (optional - leave blank or click Auto-Fetch)" />
+              <input type="text" id="addTitle" placeholder="Leave blank to auto-generate (e.g. 'how to make egg curry - Google Search') or auto-fetch" />
             </div>
 
             <div class="col-6">
@@ -2065,6 +2207,7 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
               <label for="addTransition">Transition Type</label>
               <select id="addTransition">
                 <option value="805306368">Clicked Link (805306368)</option>
+                <option value="838860805">Omnibox Search (838860805)</option>
                 <option value="805306369">Typed URL (805306369)</option>
                 <option value="805306370">Bookmark (805306370)</option>
                 <option value="805306376">Reload (805306376)</option>
@@ -2439,6 +2582,7 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
     // --- Add Visit Submit ---
     async function submitAddVisit(e) {
       e.preventDefault();
+      const entry_type = document.getElementById('addEntryType').value;
       const url = document.getElementById('addUrl').value.trim();
       const title = document.getElementById('addTitle').value.trim();
       const datetime_local = document.getElementById('addDatetime').value;
@@ -2448,9 +2592,14 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
       try {
         const res = await apiCall('/api/visits', {
           method: 'POST',
-          body: JSON.stringify({ url, title, datetime_local, transition, duration_seconds })
+          body: JSON.stringify({ url, title, datetime_local, transition, duration_seconds, entry_type })
         });
-        let msg = `Added visit #${res.visit_id} for <code>${escapeHtml(url)}</code> (WebKit: <code>${res.webkit_timestamp}</code>).`;
+        const finalUrl = res.resolved_url || url;
+        const finalTitle = res.resolved_title || title;
+        let msg = `Added visit #${res.visit_id}: <strong>${escapeHtml(finalTitle)}</strong> (<code>${escapeHtml(finalUrl)}</code>, WebKit: <code>${res.webkit_timestamp}</code>).`;
+        if (res.search_term) {
+          msg += ` Saved search term <code>${escapeHtml(res.search_term)}</code> to <code>keyword_search_terms</code>.`;
+        }
         if (res.backup_created) {
           msg += ` Backup saved: <code>${escapeHtml(res.backup_created)}</code>`;
         }
@@ -2874,6 +3023,7 @@ class HistoryRequestHandler(BaseHTTPRequestHandler):
                     transition=body.get("transition", DEFAULT_TRANSITION),
                     duration_seconds=body.get("duration_seconds", 0),
                     use_utc=bool(body.get("use_utc", False)),
+                    entry_type=body.get("entry_type", "auto"),
                 )
                 self._send_json(201, res)
                 return

@@ -1,17 +1,35 @@
-# Chrome Local Data Mapper (`ChromeHistoryStudio`)
+# Chrome Local Data Mapper (`WorkStudio`)
 
-A standalone, zero-dependency desktop & web studio for viewing, adding, backdating, editing, and synchronizing Google Chrome SQLite `History` records (`urls` and `visits` tables).
+A standalone, zero-dependency desktop & web studio for viewing, adding, backdating, editing, and synchronizing Google Chrome SQLite `History` records (`urls`, `visits`, and `keyword_search_terms` tables).
 
 ---
 
-## Quick Start (No Python Required — Windows `.exe`)
+## Quick Start (No Python Required — Windows `WorkStudio.exe`)
 
-1. Download **`ChromeHistoryStudio.exe`** from the [**GitHub Releases**](https://github.com/sujan0629/chrome-local-data-mapper/releases) page.
-2. Double-click **`ChromeHistoryStudio.exe`**.
+1. Download **`WorkStudio.exe`** from the [**GitHub Releases**](https://github.com/sujan0629/chrome-local-data-mapper/releases) page.
+2. Double-click **`WorkStudio.exe`**.
 3. It automatically:
    - Detects all local Google Chrome profiles on your computer (displaying account names & emails).
    - Connects to your `Default` Chrome `History` database.
    - Opens the web dashboard (`http://127.0.0.1:8765`) in **Microsoft Edge** so Chrome doesn't lock the database file.
+
+---
+
+## Features
+
+- **Direct URLs OR Plain Search Queries (e.g. `"how to make egg curry"`):**
+  - Type any plain search phrase like `how to make egg curry` (or select **Google Search Query** / **YouTube Search Query**) and `WorkStudio` automatically generates:
+    - Exact Chrome search URL (`https://www.google.com/search?q=how+to+make+egg+curry&oq=how+to+make+egg+curry&sourceid=chrome&ie=UTF-8`)
+    - Page Title (`how to make egg curry - Google Search`)
+    - Omnibox Search transition (`838860805`)
+    - Matching row in Chrome's `keyword_search_terms` table (`keyword_id=2`, `term`, `normalized_term`) so it appears in Chrome's Omnibox autocomplete and `chrome://history`.
+- **Two Database Modes:**
+  1. **Sandbox Mode:** Automatically creates and seeds a local `sandbox_History.db` matching Chrome's SQLite schema.
+  2. **Custom / Real Chrome `History` Mode:** Auto-detects Chrome profiles (`Default`, `Profile 1`, etc.) across Windows, macOS, and Linux, creates timestamped `.bak` backups before writes, and includes a 1-click **⚡ Sync to Chrome (Close Chrome)** button.
+- **Exact 17-Digit WebKit Timestamp Conversion:**
+  - Converts between `<input type="datetime-local">` (down to seconds) and Chrome's WebKit timestamp (`microseconds since 1601-01-01 00:00:00 UTC`):
+    - `webkit_timestamp = int((unix_seconds + 11644473600) * 1_000_000)`
+    - `unix_seconds = (webkit_timestamp / 1_000_000) - 11644473600`
 
 ---
 
@@ -32,31 +50,13 @@ Requires Python 3.10+ (uses **only the Python standard library** — zero `pip` 
 
 ---
 
-## Features
-
-- **Two Database Modes:**
-  1. **Sandbox Mode:** Automatically creates and seeds a local `sandbox_History.db` matching Chrome's SQLite schema.
-  2. **Custom / Real Chrome `History` Mode:** Auto-detects Chrome profiles (`Default`, `Profile 1`, etc.) across Windows, macOS, and Linux, creates timestamped `.bak` backups before writes, and includes a 1-click **⚡ Sync to Chrome (Close Chrome)** button.
-- **Exact 17-Digit WebKit Timestamp Conversion:**
-  - Converts between `<input type="datetime-local">` (down to seconds) and Chrome's WebKit timestamp (`microseconds since 1601-01-01 00:00:00 UTC`):
-    - `webkit_timestamp = int((unix_seconds + 11644473600) * 1_000_000)`
-    - `unix_seconds = (webkit_timestamp / 1_000_000) - 11644473600`
-- **Add, Backdate, Edit & Delete:**
-  - Add links with custom past/future dates, transition types (`Clicked Link`, `Typed URL`, `Bookmark`, `Reload`), visit durations, and **Auto-Fetch Title from URL**.
-  - Inline edit/backdate any existing visit row.
-  - Automatically recalculates `urls.visit_count = COUNT(*)` and `urls.last_visit_time = MAX(visit_time)` after every change.
-- **Live SQL Execution Log:**
-  - Displays exact `SELECT`, `INSERT`, `UPDATE`, and `DELETE` queries executed against SQLite in real time.
-
----
-
-## Building the Standalone `.exe` Yourself
+## Building `WorkStudio.exe` Yourself
 
 Double-click `Build-Portable-Exe.bat` or run:
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --name "ChromeHistoryStudio" app.py
+pyinstaller --onefile --name "WorkStudio" app.py
 ```
 
-The standalone executable will be output to `dist/ChromeHistoryStudio.exe`.
+The standalone executable will be output to `dist/WorkStudio.exe`.

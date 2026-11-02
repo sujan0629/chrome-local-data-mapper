@@ -1,14 +1,14 @@
 @echo off
-title Chrome History SQLite Studio
+title WorkStudio - Chrome Local Data Mapper
 cd /d "%~dp0"
 
 echo ========================================================================
-echo Starting Chrome History SQLite Studio...
+echo Starting WorkStudio (Chrome History SQLite Studio)...
 echo Auto-detecting local Chrome profiles and opening in Microsoft Edge...
 echo ========================================================================
 
-if exist "dist\ChromeHistoryStudio.exe" (
-    "dist\ChromeHistoryStudio.exe"
+if exist "dist\WorkStudio.exe" (
+    "dist\WorkStudio.exe"
     goto :eof
 )
 
@@ -25,5 +25,5 @@ if %errorlevel% equ 0 (
 )
 
 echo [ERROR] Python is not installed on this computer.
-echo Either install Python from https://www.python.org/ or run Build-Portable-Exe.bat on your PC first and share ChromeHistoryStudio.exe!
+echo Either install Python from https://www.python.org/ or run WorkStudio.exe!
 pause
